@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { generatePinterestData, generatePinterestImage } from './services/gemini';
 import { PinterestContent } from './types';
 import { OutputSection } from './components/OutputSection';
@@ -9,6 +9,12 @@ import {
   Image as ImageIcon, 
   Loader2,
   Download,
+  FileText,
+  Terminal,
+  ShieldCheck,
+  Upload,
+  X,
+  ImagePlus
 } from 'lucide-react';
 
 const CATEGORIES = [
@@ -35,6 +41,8 @@ const App: React.FC = () => {
   const [topic, setTopic] = useState('');
   const [category, setCategory] = useState(CATEGORIES[0]);
   const [style, setStyle] = useState(STYLES[0]);
+  const [referenceImage, setReferenceImage] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   const [data, setData] = useState<PinterestContent | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -47,9 +55,10 @@ const App: React.FC = () => {
   // Auth States
   const [user, setUser] = useState<typeof MOCK_USER | null>(null);
 
+  const MANDATORY_HASHTAGS = ["#ads", "#affiliate", "#sponsored", "#aigenerated"];
+
   // Auth Handlers
   const handleGoogleLogin = () => {
-    // Simulate Google Login Popup
     const width = 500;
     const height = 600;
     const left = window.screen.width / 2 - width / 2;
@@ -78,6 +87,29 @@ const App: React.FC = () => {
     }
   };
 
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) {
+        setError("Image size too large. Please upload an image under 5MB.");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setReferenceImage(reader.result as string);
+        setError(null);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const clearReferenceImage = () => {
+    setReferenceImage(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!topic.trim()) return;
@@ -89,14 +121,14 @@ const App: React.FC = () => {
     setGeneratedImage(null);
 
     try {
-      // Step 1: Generate Text & Metadata
-      const result = await generatePinterestData(topic, category, style);
+      // Step 1: Generate Text & Metadata (passing reference image)
+      const result = await generatePinterestData(topic, category, style, referenceImage || undefined);
       setData(result);
       setLoadingText(false);
 
-      // Step 2: Generate Image
+      // Step 2: Generate Image (passing reference image)
       setLoadingImage(true);
-      const imageBase64 = await generatePinterestImage(result.image_prompt);
+      const imageBase64 = await generatePinterestImage(result.image_prompt, referenceImage || undefined);
       setGeneratedImage(imageBase64);
     } catch (err) {
       setError("Failed to generate content. Please try again.");
@@ -115,9 +147,74 @@ const App: React.FC = () => {
     }, 2000);
   }, []);
 
+  const handleDownloadText = () => {
+    if (!data) return;
+
+    const textContent = `
+=== PinGenius Agent Generated Content ===
+Date: ${new Date().toLocaleString()}
+Topic: ${topic}
+Category: ${category}
+Style: ${style}
+
+----------------------------------------
+TITLE
+----------------------------------------
+${data.title}
+
+----------------------------------------
+DESCRIPTION
+----------------------------------------
+${data.description}
+
+----------------------------------------
+TAGS
+----------------------------------------
+${data.tags.join(', ')}
+
+----------------------------------------
+HASHTAGS
+----------------------------------------
+${data.hashtags.join(' ')}
+
+----------------------------------------
+ALT TEXT
+----------------------------------------
+${data.alt_text}
+
+----------------------------------------
+DESIGN BLUEPRINT
+----------------------------------------
+Structure: ${data.blueprint.layout_structure}
+Typography: ${data.blueprint.fonts_typography}
+Colors: ${data.blueprint.color_theme}
+Visual Style: ${data.blueprint.visual_style}
+Text Elements: ${data.blueprint.text_elements}
+
+----------------------------------------
+IMAGE PROMPT
+----------------------------------------
+${data.image_prompt}
+
+----------------------------------------
+EXPORT INSTRUCTIONS
+----------------------------------------
+${data.export_instructions}
+`.trim();
+
+    const blob = new Blob([textContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `pin-content-${topic.replace(/[^a-z0-9]/gi, '-').toLowerCase()}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="min-h-screen bg-[#F9FAFB] text-gray-900 pb-20 font-sans">
-      {/* Header */}
       <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-md border-b border-gray-200 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -155,7 +252,6 @@ const App: React.FC = () => {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-        {/* Search Section */}
         <div className="max-w-3xl mx-auto mb-16 text-center">
           <h2 className="text-4xl font-extrabold mb-4 text-gray-900 tracking-tight">Create Viral Pins in Seconds</h2>
           <p className="text-lg text-gray-500 mb-8 max-w-xl mx-auto">Generate SEO titles, descriptions, and custom graphics tailored for Pinterest.</p>
@@ -184,6 +280,46 @@ const App: React.FC = () => {
               </div>
             </div>
 
+            {/* Reference Image Upload */}
+            <div className="text-left">
+              <label className="block text-sm font-medium text-gray-700 mb-1 ml-1">Reference Image (Optional)</label>
+              {!referenceImage ? (
+                <div 
+                  onClick={() => fileInputRef.current?.click()}
+                  className="border-2 border-dashed border-gray-300 rounded-xl p-4 flex items-center justify-center gap-3 text-gray-500 hover:border-[#E60023] hover:text-[#E60023] hover:bg-red-50 transition-all cursor-pointer h-16"
+                >
+                  <ImagePlus size={20} />
+                  <span className="text-sm font-medium">Upload a design to copy style/layout</span>
+                  <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    onChange={handleImageUpload} 
+                    accept="image/*" 
+                    className="hidden" 
+                  />
+                </div>
+              ) : (
+                <div className="relative inline-block mt-1">
+                  <div className="relative rounded-lg overflow-hidden border border-gray-200 group">
+                    <img src={referenceImage} alt="Reference" className="h-16 w-auto object-cover" />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                       <button 
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); clearReferenceImage(); }}
+                        className="text-white hover:text-red-200"
+                       >
+                         <X size={20} />
+                       </button>
+                    </div>
+                  </div>
+                  <span className="text-xs text-green-600 font-medium ml-2 align-middle">
+                    <span className="inline-block w-2 h-2 rounded-full bg-green-500 mr-1"></span>
+                    Reference Attached
+                  </span>
+                </div>
+              )}
+            </div>
+
             <div className="relative group">
               <div className="absolute inset-y-0 left-0 pl-5 flex items-center pointer-events-none">
                 <Search className="h-6 w-6 text-gray-400 group-focus-within:text-[#E60023] transition-colors" />
@@ -207,13 +343,9 @@ const App: React.FC = () => {
           {error && <p className="mt-4 text-red-500 text-sm font-medium bg-red-50 py-2 rounded-lg">{error}</p>}
         </div>
 
-        {/* Results Grid */}
         {data && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-fade-in-up">
-            
-            {/* Left Column: Visuals */}
             <div className="lg:col-span-5 space-y-8 order-2 lg:order-1">
-              {/* Generated Image */}
                <div className="bg-white rounded-2xl border border-gray-200 shadow-lg overflow-hidden flex flex-col h-auto">
                  <div className="bg-gray-50 px-5 py-4 border-b border-gray-100 flex items-center justify-between">
                    <div className="flex items-center gap-2">
@@ -263,7 +395,6 @@ const App: React.FC = () => {
                  </div>
                </div>
 
-               {/* Blueprint Card */}
                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
                  <div className="bg-gray-50 px-5 py-3 border-b border-gray-100 flex items-center gap-2">
                      <Layout size={18} className="text-gray-500" />
@@ -295,9 +426,17 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Right Column: Text & SEO */}
             <div className="lg:col-span-7 space-y-6 order-1 lg:order-2">
-              
+              <div className="flex justify-end">
+                <button
+                  onClick={handleDownloadText}
+                  className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors shadow-sm"
+                >
+                  <FileText size={16} />
+                  Download Text Details
+                </button>
+              </div>
+
               <OutputSection 
                 label="Pinterest Title (SEO)" 
                 content={data.title}
@@ -314,26 +453,35 @@ const App: React.FC = () => {
                 multiline
               />
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-1 gap-6">
                  <OutputSection 
-                  label={`Tags (${data.tags.length})`}
+                  label={`Hashtags & Compliance (${data.hashtags.length})`}
                   content={
-                    <div className="flex flex-wrap gap-2">
-                      {data.tags.map((tag, i) => (
-                        <span key={i} className="px-2.5 py-1 bg-gray-100 text-gray-700 text-xs font-medium rounded-full border border-gray-200">
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  }
-                  onCopy={() => copyToClipboard(data.tags.join(', '), 'tags')}
-                  isCopied={copiedState['tags']}
-                />
-                 <OutputSection 
-                  label={`Hashtags (${data.hashtags.length})`}
-                  content={
-                    <div className="text-[#0077b5] text-sm leading-relaxed font-medium">
-                      {data.hashtags.join(' ')}
+                    <div className="space-y-4">
+                      <div className="flex flex-wrap gap-2">
+                        {data.hashtags.map((tag, i) => {
+                          const isMandatory = MANDATORY_HASHTAGS.includes(tag.toLowerCase());
+                          return (
+                            <span 
+                              key={i} 
+                              className={`px-2.5 py-1 text-xs font-medium rounded-full border flex items-center gap-1 transition-all ${
+                                isMandatory 
+                                  ? 'bg-red-50 text-red-700 border-red-200' 
+                                  : 'bg-blue-50 text-blue-700 border-blue-200'
+                              }`}
+                            >
+                              {isMandatory && <ShieldCheck size={12} />}
+                              {tag}
+                            </span>
+                          );
+                        })}
+                      </div>
+                      <div className="bg-gray-50 p-3 rounded-lg border border-dashed border-gray-300">
+                         <p className="text-[11px] text-gray-500 font-medium uppercase tracking-wider flex items-center gap-2">
+                            <ShieldCheck size={14} className="text-red-500" />
+                            Disclosure Tags Included: #ads, #affiliate, #sponsored, #aigenerated
+                         </p>
+                      </div>
                     </div>
                   }
                   onCopy={() => copyToClipboard(data.hashtags.join(' '), 'hashtags')}
@@ -342,13 +490,46 @@ const App: React.FC = () => {
               </div>
 
               <OutputSection 
+                label={`Search Engine Tags (${data.tags.length})`}
+                content={
+                  <div className="flex flex-wrap gap-2">
+                    {data.tags.map((tag, i) => (
+                      <span key={i} className="px-2.5 py-1 bg-gray-100 text-gray-700 text-xs font-medium rounded-full border border-gray-200">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                }
+                onCopy={() => copyToClipboard(data.tags.join(', '), 'tags')}
+                isCopied={copiedState['tags']}
+              />
+
+              <OutputSection 
                 label="Alt Text" 
                 content={data.alt_text}
                 onCopy={() => copyToClipboard(data.alt_text, 'alt_text')}
                 isCopied={copiedState['alt_text']}
               />
-            </div>
 
+              <OutputSection 
+                label="Export Instructions" 
+                content={data.export_instructions}
+                onCopy={() => copyToClipboard(data.export_instructions, 'export')}
+                isCopied={copiedState['export']}
+                multiline
+              />
+
+              <OutputSection 
+                label="Automation JSON"
+                content={
+                  <pre className="bg-gray-900 text-green-400 p-4 rounded-lg text-xs font-mono overflow-x-auto">
+                    {JSON.stringify(data.api_json, null, 2)}
+                  </pre>
+                }
+                onCopy={() => copyToClipboard(JSON.stringify(data.api_json, null, 2), 'json')}
+                isCopied={copiedState['json']}
+              />
+            </div>
           </div>
         )}
       </main>

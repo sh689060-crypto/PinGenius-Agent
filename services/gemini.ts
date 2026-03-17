@@ -50,7 +50,7 @@ const pinterestContentSchema: Schema = {
     description: { type: Type.STRING, description: "250-400 chars, SEO optimized with CTA" },
     alt_text: { type: Type.STRING, description: "Visual description only" },
     tags: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Exactly 10 search engine tags" },
-    hashtags: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Exactly 10 mixed competition hashtags" },
+    hashtags: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Mixed competition hashtags" },
     blueprint: blueprintSchema,
     image_prompt: { type: Type.STRING, description: "Text-to-image prompt for 1000x1500 infographic. High detail." },
     export_instructions: { type: Type.STRING, description: "Exact export text required" },
@@ -59,11 +59,10 @@ const pinterestContentSchema: Schema = {
   required: ["title", "description", "alt_text", "tags", "hashtags", "blueprint", "image_prompt", "export_instructions", "api_json"]
 };
 
-export const generatePinterestData = async (topic: string, category: string, style: string): Promise<PinterestContent> => {
-  // Always create a new instance to get the latest key
+export const generatePinterestData = async (topic: string, category: string, style: string, referenceImage?: string): Promise<PinterestContent> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  const prompt = `
+  let promptText = `
     You are a Pinterest Post Creation & Publishing Agent.
     Topic: "${topic}"
     Category: "${category}"
@@ -74,21 +73,42 @@ export const generatePinterestData = async (topic: string, category: string, sty
     2. Description: 250-400 chars, main keyword 2-3 times, 3-5 related keywords, value + CTA.
     3. Alt Text: 1 clean sentence describing visual content.
     4. Tags: EXACTLY 10 search engine tags. No more, no less.
-    5. Hashtags: EXACTLY 10 mixed hashtags. No more, no less.
+    5. Hashtags: mixed competition hashtags. You MUST include "#ads #affiliate #sponsored #aigenerated" as part of the output.
     6. Blueprint: Detailed design guidelines for 1000x1500 Pinterest Pin.
     7. Image Prompt: Single block for text-to-image model, 1000x1500, ultra-clear text, ${style} style.
     8. Export Instructions: "Export this design in: 1. PNG format... 2. JPG format..."
     9. API JSON: Structure with placeholders {{USER_BOARD_ID}}, {{PNG_URL}}, {{JPG_URL}}.
   `;
 
+  const contents: any[] = [{ role: 'user', parts: [] }];
+  
+  // Construct the parts array
+  const parts: any[] = [];
+  
+  if (referenceImage) {
+    const match = referenceImage.match(/^data:(.+);base64,(.+)$/);
+    if (match) {
+        parts.push({
+            inlineData: {
+                mimeType: match[1],
+                data: match[2]
+            }
+        });
+        promptText += "\n\nAnalyze the attached reference image. Use its layout structure, color palette, and visual aesthetic as the primary inspiration for the Design Blueprint and Image Prompt. Create a new design for the provided topic that mimics the style of this reference.";
+    }
+  }
+
+  parts.push({ text: promptText });
+  contents[0].parts = parts;
+
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
+      model: "gemini-3-flash-preview",
+      contents: contents,
       config: {
         responseMimeType: "application/json",
         responseSchema: pinterestContentSchema,
-        systemInstruction: "You are an expert Pinterest Marketing Strategist and Designer. Ensure strict adherence to tag counts.",
+        systemInstruction: "You are an expert Pinterest Marketing Strategist and Designer. You prioritize legal compliance and always include mandatory disclosure hashtags: #ads, #affiliate, #sponsored, #aigenerated.",
         temperature: 0.7,
       },
     });
@@ -96,27 +116,61 @@ export const generatePinterestData = async (topic: string, category: string, sty
     const text = response.text;
     if (!text) throw new Error("No response from Gemini");
 
-    return JSON.parse(text) as PinterestContent;
+    const result = JSON.parse(text) as PinterestContent;
+
+    // Hard compliance: Programmatically ensure these hashtags are present
+    const mandatoryHashtags = ["#ads", "#affiliate", "#sponsored", "#aigenerated"];
+    const existingHashtags = new Set(result.hashtags.map(h => h.toLowerCase()));
+    
+    mandatoryHashtags.forEach(tag => {
+      if (!existingHashtags.has(tag)) {
+        result.hashtags.push(tag);
+      }
+    });
+
+    // Sync the API JSON payload
+    result.api_json.hashtags = result.hashtags;
+
+    return result;
   } catch (error) {
     console.error("Gemini Text Generation Error:", error);
     throw error;
   }
 };
 
-export const generatePinterestImage = async (imagePrompt: string): Promise<string | null> => {
-  // Always create a new instance to get the latest key
+export const generatePinterestImage = async (imagePrompt: string, referenceImage?: string): Promise<string | null> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-  // 1. Try Gemini 2.5 Flash Image first (Standard / Preview model)
+  const parts: any[] = [];
+
+  if (referenceImage) {
+    const match = referenceImage.match(/^data:(.+);base64,(.+)$/);
+    if (match) {
+        // Provide the reference image first
+        parts.push({
+            inlineData: {
+                mimeType: match[1],
+                data: match[2]
+            }
+        });
+        // Prompt modification to use reference
+        parts.push({ text: `Create a new vertical Pinterest pin (3:4 aspect ratio) based on the visual style and layout of this reference image, but for the following description: ${imagePrompt}. High quality, professional design.` });
+    } else {
+        parts.push({ text: `${imagePrompt}. High quality, vertical Pinterest pin style.` });
+    }
+  } else {
+    parts.push({ text: `${imagePrompt}. High quality, vertical Pinterest pin style.` });
+  }
+
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
       contents: {
-        parts: [{ text: `${imagePrompt}. High quality, vertical Pinterest pin style.` }],
+        parts: parts,
       },
       config: {
         imageConfig: {
-          aspectRatio: "3:4", // Native support for vertical images
+          aspectRatio: "3:4", 
         }
       },
     });
@@ -128,26 +182,6 @@ export const generatePinterestImage = async (imagePrompt: string): Promise<strin
     }
   } catch (error) {
     console.warn("Gemini 2.5 Flash Image failed, attempting fallback...", error);
-  }
-
-  // 2. Fallback to Imagen 3.0 (If available)
-  try {
-    const response = await ai.models.generateImages({
-      model: 'imagen-3.0-generate-001',
-      prompt: imagePrompt + " Pinterest Pin, vertical, high quality, 1000x1500",
-      config: {
-        numberOfImages: 1,
-        aspectRatio: '3:4',
-        outputMimeType: 'image/jpeg',
-      },
-    });
-
-    const imageBytes = response.generatedImages?.[0]?.image?.imageBytes;
-    if (imageBytes) {
-      return `data:image/jpeg;base64,${imageBytes}`;
-    }
-  } catch (error) {
-    console.error("All image generation strategies failed:", error);
   }
 
   return null;
